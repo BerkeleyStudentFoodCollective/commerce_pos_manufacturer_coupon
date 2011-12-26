@@ -1,0 +1,347 @@
+<?php
+
+/**
+ * @file
+ * Contains functions for the commerce_pos_manufacturer_coupon module
+ */
+
+/**
+ * Implements hook_commerce_pos_action_info().
+ */
+function commerce_pos_manufacturer_coupon_commerce_pos_action_info() {
+  //Define an action to add deposits and refunds thereof.
+  return array(
+    'commerce_pos_manufacturer_coupon_upc' => array(
+      'weight' => 80,
+      'action text' => 'MC',
+      'callbacks' => array(
+        'parse' => 'commerce_pos_manufacturer_coupon_upc_parse',
+        'validate' => array('commerce_pos_order_require_modifiable_order', 'commerce_pos_manufacturer_coupon_upc_validate'),
+        'execute' => array('commerce_pos_manufacturer_coupon_upc_execute'),
+        'extract' => array('commerce_pos_manufacturer_coupon_upc_extract'),
+      ),
+    ),
+  );
+}
+
+/**
+ * Parse callback for UPC manufacturer coupon action.
+ */
+function commerce_pos_manufacturer_coupon_upc_parse($input, $action_text = 'MC') {
+  //TODO: add in a check on the UPC checksum
+  return is_numeric($input) && drupal_strlen($input) == 12 && $input[0] == '5';
+}
+
+/**
+ * Extract callback for the deposit action.
+ */
+function commerce_pos_manufacturer_coupon_upc_extract(&$variables, $values) {
+  $variables['coupon_upc'] = $values['input'];
+}
+
+/**
+ * Validate callback for the deposit action.
+ */
+function commerce_pos_manufacturer_coupon_upc_validate(&$variables) {
+  //Determine whether this order qualifies for this coupon.
+  $order = $variables['order'];
+  $order_wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $coupon_upc = $variables['coupon_upc'];
+  $value_code = drupal_substr($coupon_upc, 9, 2);
+  $value = commerce_pos_manufacturer_coupon_value_lookup($value_code);
+  $man_fam = drupal_substr($coupon_upc, 1, 8);
+
+  //This matching is easy because we don't have to worry about
+  //applying coupons to items in the wrong order.
+  if ($value['type'] == 'flat') {
+    $qualifying_quantity = 0;
+    $required_quantity = $value['quantity'];
+    foreach ($order_wrapper->commerce_line_items as $line_item_wrapper) {
+      $line_item = $line_item_wrapper->value();
+      if ($line_item->type == 'product') {
+        $sku = $line_item_wrapper->commerce_product->sku->value();
+        if (drupal_substr($sku, 1, 8) == $man_fam) {
+          $qualifying_quantity += $line_item->quantity;
+        }
+      }
+      elseif ($line_item->type == 'manufacturer_coupon') {
+        if ($line_item->data['type'] == 'upc') {
+          $existing_coupon_upc = $line_item->data['coupon_upc'];
+          if (drupal_substr($existing_coupon_upc, 1, 8) == $man_fam) {
+            $required_quantity += $line_item->quantity * $line_item->data['value']['quantity'];
+          }
+        }
+      }
+    }
+
+    if ($required_quantity > $qualifying_quantity) {
+      return array(t('Insufficient quantity purchased.'));
+    }
+    $variables['value'] = $value;
+  }
+  elseif ($value['type'] == 'free') {
+    //This coupon is of type "buy N-1 of same item, get one free"
+    $qualifying_products = array();
+    foreach ($order_wrapper->commerce_line_items as $line_item_wrapper) {
+      $line_item = $line_item_wrapper->value();
+      if ($line_item->type == 'product') {
+        $sku = $line_item_wrapper->commerce_product->sku->value();
+        if (drupal_substr($sku, 1, 8) == $man_fam) {
+          if (empty($qualifying_products[$sku])) {
+            $qualifying_products[$sku] = array(
+              'quantity' => 0,
+              'amount' => 0,
+            );
+          }
+          $qualifying_products[$sku]['quantity'] += $line_item->quantity;
+          if ($qualifying_products[$sku]['amount'] < $line_item_wrapper->commerce_unit_price->amount->value()) {
+            $qualifying_products[$sku]['amount'] = $line_item_wrapper->commerce_unit_price->amount->value();
+          }
+        }
+      }
+      else if ($line_item->type == 'manufacturer_coupon') {
+        if ($line_item->data['type'] == 'upc') {
+          $existing_coupon_upc = $line_item->data['coupon_upc'];
+          if (empty($qualifying_products[$sku])) {
+            $qualifying_products[$sku] = array(
+              'quantity' => 0,
+              'amount' => 0,
+            );
+          }
+          $qualifying_products[$sku]['quantity'] -= $line_item->quantity * $line_item->data['value']['quantity'];
+        }
+      }
+    }
+
+    $amount = 0;
+    $product_upc = '';
+
+    foreach ($qualifying_products as $sku => $product_info) {
+      if ($product_info['quantity'] >= $value['quantity'] && $product_info['amount'] > $amount) {
+        $product_upc = $sku;
+        $amount = $product_info['amount'];
+      }
+    }
+    if (empty($product_upc)) {
+      return array(t('Insufficient quantity purchased.'));
+    }
+    $value['amount'] = $amount;
+    $variables['product_upc'] = $product_upc;
+    $variables['value'] = $value;
+  }
+}
+
+/**
+ * Returns the UPC Coupon code data.
+ *
+ * @param $code
+ *  A two-digit UPC coupon code.
+ *
+ * @return
+ * 	An array corresponding to the coupon code given by $code, keyed by
+ * 	'type' (either 'flat' or 'free') and 'quantity' (as in quantity required)
+ * 	and 'amount' (as an integer) if the type is 'flat'
+ */
+function commerce_pos_manufacturer_coupon_value_lookup($code) {
+  $codes = array(
+    '01' => array('type' => 'free', 'quantity' => 1),
+    //Note that quantity includes the free one!
+    '02' => array('type' => 'free', 'quantity' => 5),
+    '03' => array('type' => 'flat', 'amount' => 110),
+    '04' => array('type' => 'flat', 'amount' => 135),
+    '05' => array('type' => 'flat', 'amount' => 140),
+    '06' => array('type' => 'flat', 'amount' => 160),
+    '07' => array('type' => 'flat', 'amount' => 150, 'quantity' => 3),
+    '08' => array('type' => 'flat', 'amount' => 300, 'quantity' => 2),
+  	'09' => array('type' => 'flat', 'amount' => 200, 'quantity' => 3),
+  	'10' => array('type' => 'flat', 'amount' => 10),
+    '11' => array('type' => 'flat', 'amount' => 185),
+  	'12' => array('type' => 'flat', 'amount' => 12),
+    '13' => array('type' => 'flat', 'amount' => 100, 'quantity' => 4),
+    '14' => array('type' => 'free', 'quantity' => 2),
+    '15' => array('type' => 'flat', 'amount' => 15),
+    '16' => array('type' => 'free', 'quantity' => 3),
+    //17 is reserved for future use.
+  	'17' => array(),
+    '18' => array('type' => 'flat', 'amount' => 260),
+    '19' => array('type' => 'free', 'quantity' => 4),
+    '20' => array('type' => 'flat', 'amount' => 20),
+    '21' => array('type' => 'flat', 'quantity' => 2, 'amount' => 35),
+    '22' => array('type' => 'flat', 'quantity' => 2, 'amount' => 40),
+    '23' => array('type' => 'flat', 'quantity' => 2, 'amount' => 45),
+    '24' => array('type' => 'flat', 'quantity' => 2, 'amount' => 50),
+    '25' => array('type' => 'flat', 'amount' => 25),
+    '26' => array('type' => 'flat', 'amount' => 285),
+    '27' => array(),
+    '28' => array('type' => 'flat', 'quantity' => 2, 'amount' => 55),
+    '29' => array('type' => 'flat', 'amount' => 29),
+    '30' => array('type' => 'flat', 'amount' => 30),
+    '31' => array('type' => 'flat', 'quantity' => 2, 'amount' => 60),
+    '32' => array('type' => 'flat', 'quantity' => 2, 'amount' => 75),
+    '33' => array('type' => 'flat', 'quantity' => 2, 'amount' => 100),
+    '34' => array('type' => 'flat', 'quantity' => 2, 'amount' => 125),
+    '35' => array('type' => 'flat', 'amount' => 35),
+    '36' => array('type' => 'flat', 'quantity' => 2, 'amount' => 150),
+    '37' => array('type' => 'flat', 'quantity' => 3, 'amount' => 25),
+    '38' => array('type' => 'flat', 'quantity' => 3, 'amount' => 30),
+    '39' => array('type' => 'flat', 'amount' => 39),
+    '40' => array('type' => 'flat', 'amount' => 40),
+    '41' => array('type' => 'flat', 'quantity' => 3, 'amount' => 50),
+    '42' => array('type' => 'flat', 'quantity' => 3, 'amount' => 100),
+    '43' => array('type' => 'flat', 'quantity' => 2, 'amount' => 110),
+    '44' => array('type' => 'flat', 'quantity' => 2, 'amount' => 135),
+    '45' => array('type' => 'flat', 'amount' => 45),
+    '46' => array('type' => 'flat', 'quantity' => 2, 'amount' => 160),
+    '47' => array('type' => 'flat', 'quantity' => 2, 'amount' => 175),
+    '48' => array('type' => 'flat', 'quantity' => 2, 'amount' => 185),
+    '49' => array('type' => 'flat', 'amount' => 49),
+    '50' => array('type' => 'flat', 'amount' => 50),
+    '51' => array('type' => 'flat', 'quantity' => 2, 'amount' => 200),
+    '52' => array('type' => 'flat', 'quantity' => 3, 'amount' => 55),
+    '53' => array('type' => 'flat', 'quantity' => 2, 'amount' => 10),
+    '54' => array('type' => 'flat', 'quantity' => 2, 'amount' => 15),
+    '55' => array('type' => 'flat', 'amount' => 55),
+    '56' => array('type' => 'flat', 'quantity' => 2, 'amount' => 20),
+    '57' => array('type' => 'flat', 'quantity' => 2, 'amount' => 25),
+    '58' => array('type' => 'flat', 'quantity' => 2, 'amount' => 30),
+    '59' => array('type' => 'flat', 'amount' => 59),
+    '60' => array('type' => 'flat', 'amount' => 60),
+    '61' => array('type' => 'flat', 'amount' => 61),
+    '62' => array('type' => 'flat', 'amount' => 950),
+    '63' => array('type' => 'flat', 'amount' => 900),
+    '64' => array('type' => 'flat', 'amount' => 850),
+    '65' => array('type' => 'flat', 'amount' => 65),
+    '66' => array('type' => 'flat', 'amount' => 800),
+    '67' => array('type' => 'flat', 'amount' => 750),
+    '68' => array('type' => 'flat', 'amount' => 700),
+    '69' => array('type' => 'flat', 'amount' => 69),
+    '70' => array('type' => 'flat', 'amount' => 70),
+    '71' => array('type' => 'flat', 'amount' => 650),
+    '72' => array('type' => 'flat', 'amount' => 600),
+    '73' => array('type' => 'flat', 'amount' => 550),
+    '74' => array('type' => 'flat', 'amount' => 500),
+    '75' => array('type' => 'flat', 'amount' => 75),
+    '76' => array('type' => 'flat', 'amount' => 100),
+    '77' => array('type' => 'flat', 'amount' => 125),
+    '78' => array('type' => 'flat', 'amount' => 150),
+    '79' => array('type' => 'flat', 'amount' => 79),
+    '80' => array('type' => 'flat', 'amount' => 80),
+    '81' => array('type' => 'flat', 'amount' => 175),
+    '82' => array('type' => 'flat', 'amount' => 200),
+    '83' => array('type' => 'flat', 'amount' => 225),
+    '84' => array('type' => 'flat', 'amount' => 250),
+    '85' => array('type' => 'flat', 'amount' => 85),
+    '86' => array('type' => 'flat', 'amount' => 275),
+    '87' => array('type' => 'flat', 'amount' => 300),
+    '88' => array('type' => 'flat', 'amount' => 325),
+    '89' => array('type' => 'flat', 'amount' => 89),
+    '90' => array('type' => 'flat', 'amount' => 90),
+    '91' => array('type' => 'flat', 'amount' => 350),
+    '92' => array('type' => 'flat', 'amount' => 375),
+    '93' => array('type' => 'flat', 'amount' => 400),
+    '94' => array(),
+    '95' => array('type' => 'flat', 'amount' => 95),
+    '96' => array('type' => 'flat', 'amount' => 450),
+    '97' => array(),
+    '98' => array('type' => 'flat', 'quantity' => 2, 'amount' => 65),
+    '99' => array('type' => 'flat', 'amount' => 99),
+    '00' => array(),
+  );
+
+  $data = $codes[$code];
+  $data += array('quantity' => 1);
+  return $data;
+}
+
+/**
+ * Execute callback for the deposit action.
+ */
+function commerce_pos_manufacturer_coupon_upc_execute(&$variables) {
+  $coupon_upc = $variables['coupon_upc'];
+  $order = $variables['order'];
+  $quantity = 1;
+
+  //As far as I can tell, the UPC coupon specifically encodes USD amounts only
+  $price = array(
+    'currency_code' => 'USD',
+    'amount' => -$variables['value']['amount'],
+  );
+
+  $line_item = commerce_pos_manufacturer_coupon_line_item_new($coupon_upc, $order, 1, $price);
+  //To speed up insertion, we save coupon data in the serialized data
+  //field, rather than creating fields for the data.
+  $line_item->data['type'] = 'upc';
+  $line_item->data['coupon_upc'] = $coupon_upc;
+  $line_item->data['value'] = $variables['value'];
+
+  $line_item->line_item_label = t('Manufacturer coupon');
+
+  if ($variables['value']['type'] == 'free') {
+    $line_item->data['product_upc'] = $variables['product_upc'];
+  }
+
+  commerce_line_item_save($line_item);
+  commerce_pos_line_item_add_to_order($line_item, $order);
+  commerce_order_save($order);
+}
+
+/**
+ * Implements hook_commerce_line_item_type_info().
+ */
+function commerce_pos_manufacturer_coupon_commerce_line_item_type_info() {
+  return array(
+    'manufacturer_coupon' => array(
+      'type' => 'manufacturer_coupon',
+      'name' => t('Manufacturer\'s coupon'),
+      'description' => t('A discount from a manufacturer\'s coupon.'),
+      'add_form_submit_value' => t('Add coupons'),
+      'base' => 'commerce_pos_manufacturer_coupon_line_item',
+    ),
+  );
+}
+
+/**
+ * Returns an appropriate title for this line item.
+ */
+function commerce_pos_manufacturer_coupon_line_item_title($line_item) {
+  return t('Manufacturer\'s coupon');
+}
+
+/**
+ * Creates a new deposit line item populated with the proper deposit values.
+ *
+ * @param $deposit
+ *   The fully loaded deposit referenced by the line item.
+ * @param $quantity
+ *   The quantity to set for the deposit.
+ * @param $order_id
+ *   The ID of the order the line item belongs to (if available).
+ * @param $display_uri
+ *   A URI array as returned by entity_uri() indicating the display to link the
+ *     deposit line item to; defaults to NULL for no display.
+ *
+ * @return
+ *   The fully loaded line item populated with the deposit data as specified.
+ */
+function commerce_pos_manufacturer_coupon_line_item_new($coupon_upc, $order = NULL, $quantity = 1, $price = array(), $display_uri = NULL) {
+  // Create the new line item.
+  $order_id = empty($order) ? NULL : $order->order_id;
+
+  $line_item = entity_create('commerce_line_item', array(
+    'type' => 'manufacturer_coupon',
+    'order_id' => $order_id,
+    'quantity' => $quantity,
+  ));
+
+  $line_item_wrapper = entity_metadata_wrapper('commerce_line_item', $line_item);
+
+  $price += array(
+    'amount' => 0,
+    'currency_code' => commerce_pos_default_currency(),
+  );
+
+  $line_item_wrapper->commerce_unit_price = $price;
+
+  // Return the line item.
+  return $line_item;
+}

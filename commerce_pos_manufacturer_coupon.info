@@ -1,0 +1,9 @@
+name = Commerce POS Manufacturer Coupon
+description = Allows for processing of manufacturer coupons barcoded with UPCs.
+package = Commerce POS
+dependencies[] = commerce
+dependencies[] = commerce_pos_product
+dependencies[] = commerce_pos_line_item
+dependencies[] = commerce_pos
+
+core = 7.x

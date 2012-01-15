@@ -60,7 +60,7 @@ function commerce_pos_manufacturer_coupon_upc_validate(&$variables) {
       $line_item = $line_item_wrapper->value();
       if ($line_item->type == 'product') {
         $sku = $line_item_wrapper->commerce_product->sku->value();
-        if (drupal_substr($sku, 1, 8) == $man_fam || (drupal_substr($sku, 1, 5) == drupal_substr($man_fam, 1, 5) && $man_fam[7] == '0')) {
+        if (drupal_substr($sku, 1, 8) == $man_fam || (drupal_substr($sku, 1, 5) == drupal_substr($man_fam, 0, 5) && $man_fam[7] == '0')) {
           $qualifying_quantity += $line_item->quantity;
         }
       }
@@ -86,7 +86,7 @@ function commerce_pos_manufacturer_coupon_upc_validate(&$variables) {
       $line_item = $line_item_wrapper->value();
       if ($line_item->type == 'product') {
         $sku = $line_item_wrapper->commerce_product->sku->value();
-        if (drupal_substr($sku, 1, 8) == $man_fam || (drupal_substr($sku, 1, 5) == drupal_substr($man_fam, 1, 5) && $man_fam[7] == '0')) {
+        if (drupal_substr($sku, 1, 8) == $man_fam || (drupal_substr($sku, 1, 5) == drupal_substr($man_fam, 0, 5) && $man_fam[7] == '0')) {
           if (empty($qualifying_products[$sku])) {
             $qualifying_products[$sku] = array(
               'quantity' => 0,

@@ -280,7 +280,6 @@ function commerce_pos_manufacturer_coupon_upc_execute(&$variables) {
     $line_item->data['product_upc'] = $variables['product_upc'];
   }
 
-  commerce_line_item_save($line_item);
   commerce_pos_line_item_add_to_order($line_item, $order);
   commerce_order_save($order);
 }
@@ -339,6 +338,18 @@ function commerce_pos_manufacturer_coupon_line_item_new($coupon_upc, $order = NU
     'amount' => 0,
     'currency_code' => commerce_pos_default_currency(),
   );
+
+  $price+= array('data' => array());
+
+  // Add the base price to the components array.
+  if (!commerce_price_component_load($price, 'base_price')) {
+    $price['data'] = commerce_price_component_add(
+      $price,
+      'base_price',
+      $price,
+      TRUE
+    );
+  }
 
   $line_item_wrapper->commerce_unit_price = $price;
 

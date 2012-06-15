@@ -51,84 +51,109 @@ function commerce_pos_manufacturer_coupon_upc_validate(&$variables) {
   $value = commerce_pos_manufacturer_coupon_value_lookup($value_code);
   $man_fam = drupal_substr($coupon_upc, 1, 8);
 
-  //This matching is easy because we don't have to worry about
-  //applying coupons to items in the wrong order.
-  if ($value['type'] == 'flat') {
-    $qualifying_quantity = 0;
-    $required_quantity = $value['quantity'];
-    foreach ($order_wrapper->commerce_line_items as $line_item_wrapper) {
-      $line_item = $line_item_wrapper->value();
-      if ($line_item->type == 'product') {
-        $sku = $line_item_wrapper->commerce_product->sku->value();
-        if (drupal_substr($sku, 1, 8) == $man_fam || (drupal_substr($sku, 1, 5) == drupal_substr($man_fam, 0, 5) && $man_fam[7] == '0')) {
-          $qualifying_quantity += $line_item->quantity;
-        }
-      }
-      elseif ($line_item->type == 'manufacturer_coupon') {
-        if ($line_item->data['type'] == 'upc') {
-          $existing_coupon_upc = $line_item->data['coupon_upc'];
-          if (drupal_substr($existing_coupon_upc, 1, 8) == $man_fam) {
-            $required_quantity += $line_item->quantity * $line_item->data['value']['quantity'];
-          }
-        }
-      }
-    }
+  $eligible_line_items = array();
+  $coupon_line_items = array();
 
-    if ($required_quantity > $qualifying_quantity) {
-      return array(t('Insufficient quantity purchased.'));
+  //Collect all the line items which this coupon can apply to and other coupon line items.
+  foreach ($order_wrapper->commerce_line_items as $line_item_wrapper) {
+    if (commerce_pos_manufacturer_coupon_line_item_match($coupon_upc, $line_item_wrapper->value())) {
+      $amount = $line_item_wrapper->commerce_unit_price->amount->value();
+      $currency_code = $line_item_wrapper->commerce_unit_price->currency_code->value();
+      $eligible_line_items[$line_item_wrapper->line_item_id->value()] = array(
+        'quantity' => $line_item_wrapper->quantity->value(),
+        'unit_price:amount' => commerce_currency_convert($amount, $currency_code),
+        'line_item_id' => $line_item_wrapper->line_item_id->value(),
+      );
     }
-    $variables['value'] = $value;
   }
-  elseif ($value['type'] == 'free') {
-    //This coupon is of type "buy N-1 of same item, get one free"
-    $qualifying_products = array();
-    foreach ($order_wrapper->commerce_line_items as $line_item_wrapper) {
-      $line_item = $line_item_wrapper->value();
-      if ($line_item->type == 'product') {
-        $sku = $line_item_wrapper->commerce_product->sku->value();
-        if (drupal_substr($sku, 1, 8) == $man_fam || (drupal_substr($sku, 1, 5) == drupal_substr($man_fam, 0, 5) && $man_fam[7] == '0')) {
-          if (empty($qualifying_products[$sku])) {
-            $qualifying_products[$sku] = array(
-              'quantity' => 0,
-              'amount' => 0,
-            );
-          }
-          $qualifying_products[$sku]['quantity'] += $line_item->quantity;
-          if ($qualifying_products[$sku]['amount'] < $line_item_wrapper->commerce_unit_price->amount->value()) {
-            $qualifying_products[$sku]['amount'] = $line_item_wrapper->commerce_unit_price->amount->value();
-          }
-        }
-      }
-      else if ($line_item->type == 'manufacturer_coupon') {
-        if ($line_item->data['type'] == 'upc') {
-          $existing_coupon_upc = $line_item->data['coupon_upc'];
-          if (empty($qualifying_products[$sku])) {
-            $qualifying_products[$sku] = array(
-              'quantity' => 0,
-              'amount' => 0,
-            );
-          }
-          $qualifying_products[$sku]['quantity'] -= $line_item->quantity * $line_item->data['value']['quantity'];
-        }
-      }
-    }
 
-    $amount = 0;
-    $product_upc = '';
-
-    foreach ($qualifying_products as $sku => $product_info) {
-      if ($product_info['quantity'] >= $value['quantity'] && $product_info['amount'] > $amount) {
-        $product_upc = $sku;
-        $amount = $product_info['amount'];
+  //Determine which ones already have coupons applied.
+  foreach ($order_wrapper->commerce_line_items as $line_item_wrapper) {
+    if ($line_item_wrapper->type->value() == 'manufacturer_coupon') {
+      $target_products = commerce_pos_manufacturer_coupon_applied_to($line_item_wrapper->value());
+      foreach ($target_products as $line_item_id => $data) {
+        $eligible_line_items[$line_item_id]['quantity'] -= $data['quantity'];
       }
     }
-    if (empty($product_upc)) {
-      return array(t('Insufficient quantity purchased.'));
-    }
-    $value['amount'] = $amount;
-    $variables['product_upc'] = $product_upc;
-    $variables['value'] = $value;
   }
+
+  //Check whether the order has enough qualifying items to apply the coupon.
+  $eligible_quantity = 0;
+  foreach($eligible_line_items as $line_item_id => $data) {
+    $eligible_quantity += $data['quantity'];
+  }
+  //If so, apply the coupon.
+  if ($eligible_quantity >= $value['quantity']) {
+    //Sort eligible items by price.
+    usort($eligible_line_items, '_commerce_pos_manufacturer_coupon_price_compare');
+    //Reverse the array if it's a free coupon so that we apply to most expensive items.
+    if ($value['type'] == 'free') {
+      $eligible_line_items = array_reverse($eligible_line_items);
+    }
+    //Apply the coupon to the requisite number of the product.
+    $quantity_applied = 0;
+    $applied_to = array();
+    foreach ($eligible_line_items as $product_data) {
+      $line_item = commerce_line_item_load($product_data['line_item_id']);
+      //Determine the quantity on this line item.
+      $quantity = intval(min($line_item->quantity, $value['quantity'] - $quantity_applied));
+      $applied_to[$line_item->line_item_id] = array(
+        'quantity' => $quantity,
+      );
+      $quantity_applied += $quantity;
+      if (intval($quantity_applied + $quantity) == $value['quantity'] ) {
+        if ($value['type'] == 'flat') {
+          $amount = $value['amount'];
+        }
+        elseif ($value['type'] == 'free') {
+          $line_item_wrapper = entity_metadata_wrapper('commerce_line_item', $line_item);
+          $amount = $line_item_wrapper->commerce_unit_price->amount->value();
+          $data['free_line_item_id'] = $line_item->line_item_id;
+        }
+        break;
+      }
+    }
+
+    $data = array(
+    	'type' => 'upc',
+      'coupon_upc' => $coupon_upc,
+      'applied_to' => $applied_to,
+    );
+
+    $variables['data'] = $data;
+    $variables['value']['amount'] = $amount;
+  }
+  else {
+    return array(t('Insufficient quantity purchased.'));
+  }
+}
+
+/**
+ * Determine which line items a coupon has been applied to.
+ */
+function commerce_pos_manufacturer_coupon_applied_to($line_item) {
+  return $line_item->data['applied_to'];
+}
+
+/**
+ * Comparison callback for sorting eligible line item data by price.
+ */
+function _commerce_pos_manufacturer_coupon_price_compare($a, $b) {
+  return intval($a['unit_price:amount'] - $b['unit_price:amount']);
+}
+
+/**
+ * Determines whether a given line item is eligible for a coupon.
+ */
+function commerce_pos_manufacturer_coupon_line_item_match($coupon_upc, $line_item) {
+  $man_fam = drupal_substr($coupon_upc, 1, 8);
+
+  if ($line_item->type == 'product') {
+    $wrapper = entity_metadata_wrapper('commerce_line_item', $line_item);
+    $sku = $wrapper->commerce_product->sku->value();
+    return drupal_substr($sku, 1, 8) == $man_fam || (drupal_substr($sku, 1, 5) == drupal_substr($man_fam, 0, 5) && $man_fam[7] == '0');
+  }
+  return FALSE;
 }
 
 /**
@@ -257,7 +282,7 @@ function commerce_pos_manufacturer_coupon_value_lookup($code) {
  * Execute callback for the deposit action.
  */
 function commerce_pos_manufacturer_coupon_upc_execute(&$variables) {
-  $coupon_upc = $variables['coupon_upc'];
+  $data = $variables['data'];
   $order = $variables['order'];
   $quantity = 1;
 
@@ -270,15 +295,9 @@ function commerce_pos_manufacturer_coupon_upc_execute(&$variables) {
   $line_item = commerce_pos_manufacturer_coupon_line_item_new($coupon_upc, $order, 1, $price);
   //To speed up insertion, we save coupon data in the serialized data
   //field, rather than creating fields for the data.
-  $line_item->data['type'] = 'upc';
-  $line_item->data['coupon_upc'] = $coupon_upc;
-  $line_item->data['value'] = $variables['value'];
+  $line_item->data = $data;
 
   $line_item->line_item_label = t('Manufacturer coupon');
-
-  if ($variables['value']['type'] == 'free') {
-    $line_item->data['product_upc'] = $variables['product_upc'];
-  }
 
   commerce_pos_line_item_add_to_order($line_item, $order);
   commerce_order_save($order);

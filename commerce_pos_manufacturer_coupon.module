@@ -97,11 +97,15 @@ function commerce_pos_manufacturer_coupon_upc_validate(&$variables) {
       $line_item = commerce_line_item_load($product_data['line_item_id']);
       //Determine the quantity on this line item.
       $quantity = intval(min($line_item->quantity, $value['quantity'] - $quantity_applied));
-      $applied_to[$line_item->line_item_id] = array(
+      $info = array(
         'quantity' => $quantity,
       );
+      if ($value['type'] == 'flat') {
+        $info['amount'] = $quantity * $amount / $value['quantity'];
+      }
+      $applied_to[$line_item->line_item_id] = $info;
       $quantity_applied += $quantity;
-      if (intval($quantity_applied + $quantity) == $value['quantity'] ) {
+      if (intval($quantity_applied) == $value['quantity'] ) {
         if ($value['type'] == 'flat') {
           $amount = $value['amount'];
         }
@@ -110,18 +114,18 @@ function commerce_pos_manufacturer_coupon_upc_validate(&$variables) {
           $amount = $line_item_wrapper->commerce_unit_price->amount->value();
           $data['free_line_item_id'] = $line_item->line_item_id;
         }
+        $applied_to[$line_item->line_item_id]['amount'] = $amount;
         break;
       }
     }
 
-    $data = array(
+    $variables['data'] = array(
     	'type' => 'upc',
       'coupon_upc' => $coupon_upc,
       'applied_to' => $applied_to,
     );
 
-    $variables['data'] = $data;
-    $variables['value']['amount'] = $amount;
+    $variables['value']['amount'] = $value['amount'];
   }
   else {
     return array(t('Insufficient quantity purchased.'));
@@ -374,4 +378,25 @@ function commerce_pos_manufacturer_coupon_line_item_new($coupon_upc, $order = NU
 
   // Return the line item.
   return $line_item;
+}
+
+/**
+ * Implements hook_commerce_pos_snap_eligible_components().
+ */
+function commerce_pos_manufacturer_coupon_commerce_pos_snap_eligible_components($line_item, $order) {
+  $order_wrapper = entity_metadata_wrapper('commerce_order', $line_item->order_id);
+  foreach ($order_wrapper->commerce_line_items as $line_item_wrapper) {
+    if ($line_item_wrapper->type->value() == 'manufacturer_coupon') {
+      $coupon_line_item = $line_item_wrapper->value();
+      $applied_to = commerce_pos_manufacturer_coupon_applied_to($coupon_line_item);
+      if (is_array($applied_to[$line_item->line_item_id])) {
+        return array(
+          array(
+          	'currency_code' => $line_item_wrapper->commerce_total->currency_code->value(),
+          	'amount' => - $applied_to[$line_item->line_item_id]['quantity'] * $applied_to[$line_item->line_item_id]['amount'],
+          ),
+        );
+      }
+    }
+  }
 }

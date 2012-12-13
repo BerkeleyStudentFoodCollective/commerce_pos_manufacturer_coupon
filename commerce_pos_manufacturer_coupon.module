@@ -383,7 +383,7 @@ function commerce_pos_manufacturer_coupon_line_item_new($coupon_upc, $order = NU
 /**
  * Implements hook_commerce_pos_snap_eligible_components().
  */
-function commerce_pos_manufacturer_coupon_commerce_pos_snap_eligible_components($line_item, $order) {
+function commerce_pos_manufacturer_coupon_commerce_pos_snap_eligible_components($line_item) {
   $order_wrapper = entity_metadata_wrapper('commerce_order', $line_item->order_id);
   foreach ($order_wrapper->commerce_line_items as $line_item_wrapper) {
     if ($line_item_wrapper->type->value() == 'manufacturer_coupon') {

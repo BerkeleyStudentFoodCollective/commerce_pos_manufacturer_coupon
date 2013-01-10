@@ -50,7 +50,7 @@ function commerce_pos_manufacturer_coupon_upc_validate(&$variables) {
   $value_code = drupal_substr($coupon_upc, 9, 2);
   $value = commerce_pos_manufacturer_coupon_value_lookup($value_code);
   $man_fam = drupal_substr($coupon_upc, 1, 8);
-
+watchdog('value', print_r($value, 1));
   $eligible_line_items = array();
   $coupon_line_items = array();
 
@@ -61,7 +61,7 @@ function commerce_pos_manufacturer_coupon_upc_validate(&$variables) {
       $currency_code = $line_item_wrapper->commerce_unit_price->currency_code->value();
       $eligible_line_items[$line_item_wrapper->line_item_id->value()] = array(
         'quantity' => $line_item_wrapper->quantity->value(),
-        'unit_price:amount' => commerce_currency_convert($amount, $currency_code),
+        'unit_price:amount' => commerce_currency_convert($amount, $currency_code, 'USD'),
         'line_item_id' => $line_item_wrapper->line_item_id->value(),
       );
     }
@@ -125,7 +125,8 @@ function commerce_pos_manufacturer_coupon_upc_validate(&$variables) {
       'applied_to' => $applied_to,
     );
 
-    $variables['value']['amount'] = $value['amount'];
+    $variables['value']['amount'] = $applied_to[$line_item->line_item_id]['amount'];
+    watchdog('test', print_r($variables, 1));
   }
   else {
     return array(t('Insufficient quantity purchased.'));
@@ -277,9 +278,9 @@ function commerce_pos_manufacturer_coupon_value_lookup($code) {
     '00' => array(),
   );
 
-  $data = $codes[$code];
-  $data += array('quantity' => 1);
-  return $data;
+  $return = $codes[$code];
+  $return += array('quantity' => 1);
+  return $return;
 }
 
 /**
@@ -289,6 +290,7 @@ function commerce_pos_manufacturer_coupon_upc_execute(&$variables) {
   $data = $variables['data'];
   $order = $variables['order'];
   $quantity = 1;
+  $coupon_upc = $variables['coupon_upc'];
 
   //As far as I can tell, the UPC coupon specifically encodes USD amounts only
   $price = array(
@@ -389,7 +391,8 @@ function commerce_pos_manufacturer_coupon_commerce_pos_snap_eligible_components(
     if ($line_item_wrapper->type->value() == 'manufacturer_coupon') {
       $coupon_line_item = $line_item_wrapper->value();
       $applied_to = commerce_pos_manufacturer_coupon_applied_to($coupon_line_item);
-      if (is_array($applied_to[$line_item->line_item_id])) {
+      if (isset($applied_to[$line_item->line_item_id]) &&
+        is_array($applied_to[$line_item->line_item_id])) {
         return array(
           array(
           	'currency_code' => $line_item_wrapper->commerce_total->currency_code->value(),

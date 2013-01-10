@@ -50,7 +50,6 @@ function commerce_pos_manufacturer_coupon_upc_validate(&$variables) {
   $value_code = drupal_substr($coupon_upc, 9, 2);
   $value = commerce_pos_manufacturer_coupon_value_lookup($value_code);
   $man_fam = drupal_substr($coupon_upc, 1, 8);
-watchdog('value', print_r($value, 1));
   $eligible_line_items = array();
   $coupon_line_items = array();
 
@@ -126,7 +125,6 @@ watchdog('value', print_r($value, 1));
     );
 
     $variables['value']['amount'] = $applied_to[$line_item->line_item_id]['amount'];
-    watchdog('test', print_r($variables, 1));
   }
   else {
     return array(t('Insufficient quantity purchased.'));

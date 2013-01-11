@@ -401,3 +401,4 @@ function commerce_pos_manufacturer_coupon_commerce_pos_snap_eligible_components(
     }
   }
 }
+
